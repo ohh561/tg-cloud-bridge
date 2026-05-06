@@ -21,7 +21,6 @@ ALIST_PASS = os.getenv("ALIST_PASS")
 if not ALIST_WEBDAV_CRYPT and os.getenv("ALIST_WEBDAV"):
     ALIST_WEBDAV_CRYPT = os.getenv("ALIST_WEBDAV")
 
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB
 MAX_RETRIES = 3
 RETRY_BACKOFF = [5, 15, 30]
 CONCURRENT_UPLOADS = 3
@@ -284,13 +283,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filename = get_file_name(doc, file_type)
     type_folder = get_type_folder(file_type)
 
-    if file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(
-            f"❌ 文件太大: {format_size(file_size)}\n"
-            f"限制: {format_size(MAX_FILE_SIZE)}"
-        )
-        return
-
     keyboard = [[
         InlineKeyboardButton("🔒 混淆上传", callback_data="upload_crypt"),
         InlineKeyboardButton("📤 直接上传", callback_data="upload_direct"),
@@ -372,7 +364,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **文件上传机器人 v3.1**\n\n"
         "发送 文件/视频/音频/图片，选择模式即可上传。\n\n"
-        f"📏 **大小限制：** {format_size(MAX_FILE_SIZE)}\n"
         f"⚡ **并发上传：** {CONCURRENT_UPLOADS} 个\n"
         f"🔄 **失败重试：** {MAX_RETRIES} 次\n\n"
         f"📤 **当前模式：** {get_mode_label(mode)}\n"
