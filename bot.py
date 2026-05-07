@@ -354,6 +354,8 @@ async def _background_upload(context, query, file_info, file_id, file_size, file
 
         webdav_base = get_upload_webdav(user_id, mode)
         upload_webdav = webdav_base.rstrip('/') + f'/{type_folder}/'
+        # 拼接完整文件 URL（含文件名，URL 编码）
+        upload_url = f"{upload_webdav.rstrip('/')}/{urlquote(filename)}"
 
         local_path = None
         try:
@@ -408,8 +410,8 @@ async def _background_upload(context, query, file_info, file_id, file_size, file
                     except Exception:
                         pass
 
-            logger.info(f"Starting upload to {upload_webdav}")
-            success, result = await upload_file_async(local_path, upload_webdav, upload_progress_cb)
+            logger.info(f"Starting upload to {upload_url}")
+            success, result = await upload_file_async(local_path, upload_url, upload_progress_cb)
 
             if cancel_flags.get(task_id):
                 await msg.edit_text("⏹️ 已取消")
@@ -584,7 +586,8 @@ async def callback_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
 
         try:
-            success, result = await upload_file_async(local_path, upload_webdav, upload_progress_cb)
+            retry_upload_url = f"{upload_webdav.rstrip('/')}/{urlquote(filename)}"
+            success, result = await upload_file_async(local_path, retry_upload_url, upload_progress_cb)
             elapsed = time.time() - start_time
 
             if success:
