@@ -452,6 +452,7 @@ async def _background_upload(context, query, file_info, file_id, file_size, file
                 retry_id = f"retry_{user_id}_{int(time.time())}"
                 failed_files[retry_id] = {
                     "local_path": local_path,
+                    "file_id": file_id,
                     "filename": filename,
                     "file_type": file_type,
                     "type_folder": type_folder,
@@ -546,6 +547,7 @@ async def callback_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.answer()
     local_path = info["local_path"]
+    file_id = info.get("file_id")
     filename = info["filename"]
     file_type = info["file_type"]
     type_folder = info["type_folder"]
@@ -553,13 +555,36 @@ async def callback_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upload_webdav = info["upload_webdav"]
     user_id = info["user_id"]
 
+    # 如果本地文件不存在，尝试重新下载
     if not os.path.exists(local_path):
-        await query.edit_message_text(f"❌ 文件已丢失，请重新发送")
-        return
-
-    msg = await query.edit_message_text(
-        f"🔄 重新上传中...\n📄 {filename}\n📤 {get_mode_label(mode)}"
-    )
+        if not file_id:
+            await query.edit_message_text("❌ 文件已过期，请重新发送")
+            return
+        msg = await query.edit_message_text(
+            f"🔄 文件已失效，重新下载中...\n📄 {filename}"
+        )
+        try:
+            for dl_attempt in range(3):
+                try:
+                    new_file = await context.bot.get_file(file_id)
+                    local_path = new_file.file_path
+                    break
+                except Exception as dl_err:
+                    logger.warning(f"Re-download attempt {dl_attempt + 1}/3 failed: {dl_err}")
+                    if dl_attempt < 2:
+                        await asyncio.sleep(5 * (dl_attempt + 1))
+                    else:
+                        raise dl_err
+            if not os.path.exists(local_path):
+                await msg.edit_text(f"❌ 重新下载失败，请重新发送文件")
+                return
+        except Exception as e:
+            await msg.edit_text(f"❌ 重新下载失败: {str(e)[:100]}")
+            return
+    else:
+        msg = await query.edit_message_text(
+            f"🔄 重新上传中...\n📄 {filename}\n📤 {get_mode_label(mode)}"
+        )
 
     async with upload_semaphore:
         start_time = time.time()
@@ -617,6 +642,7 @@ async def callback_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 retry_id2 = f"retry_{user_id}_{int(time.time())}"
                 failed_files[retry_id2] = {
                     "local_path": local_path,
+                    "file_id": file_id,
                     "filename": filename,
                     "file_type": file_type,
                     "type_folder": type_folder,
