@@ -40,6 +40,7 @@ pending_files = {}       # msg_id -> file_info
 cancel_flags = {}        # task_id -> bool
 failed_files = {}        # retry_id -> {local_path, filename, file_type, type_folder, mode, user_id, ts}
 uploaded_files = {}      # share_key -> {file_path, filename, mode, ts}
+media_groups = {}        # media_group_id -> {"files": [...], "timer": Task, "user_id": int, "chat_id": int, "msg_ids": [int]}
 
 # AList token cache
 alist_token = None
@@ -490,6 +491,148 @@ async def _background_upload(context, query, file_info, file_id, file_size, file
 #  文件接收 → 按钮选择
 # ============================================================
 
+# ============================================================
+#  媒体组处理
+# ============================================================
+
+async def process_media_group(context, media_group_id):
+    """处理收集完的媒体组：找到视频文件名做文件夹名，批量上传"""
+    group = media_groups.pop(media_group_id, None)
+    if not group:
+        return
+
+    files = group["files"]
+    user_id = group["user_id"]
+    chat_id = group["chat_id"]
+    mode = get_mode(user_id)
+
+    if not files:
+        return
+
+    # 优先用视频文件名做文件夹名，没有视频就用第一个文件
+    folder_name = None
+    for f in files:
+        if f["file_type"] == "video":
+            # 去掉扩展名
+            name = f["filename"]
+            folder_name = os.path.splitext(name)[0]
+            break
+    if not folder_name:
+        folder_name = os.path.splitext(files[0]["filename"])[0]
+
+    # 清理文件夹名中的非法字符
+    folder_name = folder_name.strip().replace("/", "_").replace("\\", "_")
+    if not folder_name:
+        folder_name = f"media_{int(time.time())}"
+
+    # 优先用视频的类型文件夹，没有视频就用第一个文件的类型
+    main_type = files[0]["file_type"]
+    for f in files:
+        if f["file_type"] == "video":
+            main_type = "video"
+            break
+    type_folder = get_type_folder(main_type)
+
+    # 发送汇总消息
+    total_size = sum(f["file_size"] for f in files)
+    file_list = "\n".join(f"  • {f['filename']}" for f in files)
+    summary_msg = await context.bot.send_message(
+        chat_id,
+        f"📁 **媒体组接收完成**\n\n"
+        f"📂 文件夹: {folder_name}\n"
+        f"📄 文件数: {len(files)}\n"
+        f"📏 总大小: {format_size(total_size)}\n"
+        f"📤 模式: {get_mode_label(mode)}\n\n"
+        f"文件列表:\n{file_list}\n\n"
+        f"⏳ 开始批量上传...",
+        parse_mode="Markdown"
+    )
+
+    # 批量上传
+    success_count = 0
+    fail_count = 0
+    for i, f in enumerate(files, 1):
+        file_id = f["file_id"]
+        filename = f["filename"]
+        file_type = f["file_type"]
+        file_size = f["file_size"]
+
+        webdav_base = get_upload_webdav(user_id, mode)
+        upload_webdav = webdav_base.rstrip('/') + f'/{type_folder}/{urlquote(folder_name)}/'
+        upload_url = f"{upload_webdav.rstrip('/')}/{urlquote(filename)}"
+
+        local_path = None
+        try:
+            await summary_msg.edit_text(
+                f"📁 **{folder_name}**\n"
+                f"📤 {get_mode_label(mode)}\n\n"
+                f"⏳ 上传中 ({i}/{len(files)})...\n"
+                f"📄 {filename}\n📏 {format_size(file_size)}",
+                parse_mode="Markdown"
+            )
+
+            # 下载文件
+            new_file = None
+            for dl_attempt in range(3):
+                try:
+                    new_file = await context.bot.get_file(file_id)
+                    break
+                except Exception as dl_err:
+                    if dl_attempt < 2:
+                        await asyncio.sleep(5 * (dl_attempt + 1))
+                    else:
+                        raise dl_err
+
+            local_path = new_file.file_path
+            if not os.path.exists(local_path):
+                logger.error(f"File not found: {local_path}")
+                fail_count += 1
+                continue
+
+            # 上传
+            success, result = await upload_file_async(local_path, upload_url)
+            if success:
+                success_count += 1
+            else:
+                fail_count += 1
+                logger.error(f"Upload failed for {filename}: {result}")
+
+        except Exception as e:
+            fail_count += 1
+            logger.error(f"Media group file error: {e}")
+        finally:
+            if local_path and os.path.exists(local_path):
+                try:
+                    os.remove(local_path)
+                except Exception:
+                    pass
+
+    # 汇总结果
+    elapsed_total = time.time() - group["ts"]
+    status = "✅" if fail_count == 0 else "⚠️"
+    await summary_msg.edit_text(
+        f"{status} **媒体组上传完成**\n\n"
+        f"📂 文件夹: {type_folder}/{folder_name}/\n"
+        f"✅ 成功: {success_count}\n"
+        f"❌ 失败: {fail_count}\n"
+        f"⏱️ 耗时: {elapsed_total:.0f}秒",
+        parse_mode="Markdown"
+    )
+
+    # 自动删除原始消息
+    if user_autodel.get(user_id, False):
+        try:
+            await asyncio.sleep(3)
+            await summary_msg.delete()
+            for msg_id in group.get("msg_ids", []):
+                try:
+                    await context.bot.delete_message(chat_id, msg_id)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ALLOWED_USER_ID:
         return
@@ -502,6 +645,36 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filename = get_file_name(doc, file_type)
     type_folder = get_type_folder(file_type)
     mode = get_mode(update.effective_user.id)
+
+    # --- 媒体组处理：收集同组文件，延迟批量上传 ---
+    media_group_id = update.message.media_group_id
+    if media_group_id:
+        if media_group_id not in media_groups:
+            media_groups[media_group_id] = {
+                "files": [],
+                "timer": None,
+                "user_id": update.effective_user.id,
+                "chat_id": update.message.chat_id,
+                "msg_ids": [],
+                "ts": time.time(),
+            }
+        group = media_groups[media_group_id]
+        group["files"].append({
+            "file_id": doc.file_id,
+            "file_type": file_type,
+            "file_size": file_size,
+            "filename": filename,
+        })
+        group["msg_ids"].append(update.message.message_id)
+
+        # 重置计时器（2秒后处理）
+        if group["timer"]:
+            group["timer"].cancel()
+        group["timer"] = asyncio.get_event_loop().call_later(
+            2.0,
+            lambda: asyncio.create_task(process_media_group(context, media_group_id))
+        )
+        return
 
     # crypt 模式直接上传，direct 模式也直接上传（用已选路径）
     keyboard = [[
@@ -749,7 +922,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     current_folder = user_folder.get(update.effective_user.id, "默认")
     await update.message.reply_text(
-        "🤖 TG Super Bot v4.4\n\n"
+        "🤖 TG Super Bot v4.6\n\n"
         "发送文件即可上传到 AList\n\n"
         "命令：\n"
         "/start - 显示帮助\n"
@@ -881,6 +1054,13 @@ async def cleanup_temp_files():
     for k in expired_shares:
         uploaded_files.pop(k, None)
 
+    # 清理过期 media_groups（超过 5 分钟未收齐的）
+    expired_groups = [k for k, v in media_groups.items() if now - v.get("ts", 0) > 300]
+    for k in expired_groups:
+        g = media_groups.pop(k, None)
+        if g and g.get("timer"):
+            g["timer"].cancel()
+
 
 # ============================================================
 #  启动
@@ -946,5 +1126,5 @@ if __name__ == '__main__':
         ])
     app.post_init = post_init
 
-    logger.info(f"🤖 Super Bot v4.4 is running... (concurrency={CONCURRENT_UPLOADS})")
+    logger.info(f"🤖 Super Bot v4.6 is running... (concurrency={CONCURRENT_UPLOADS})")
     app.run_polling()
