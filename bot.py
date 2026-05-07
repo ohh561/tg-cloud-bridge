@@ -18,6 +18,7 @@ ALIST_WEBDAV_DIRECT = os.getenv("ALIST_WEBDAV_DIRECT", "")
 ALIST_USER = os.getenv("ALIST_USER")
 ALIST_PASS = os.getenv("ALIST_PASS")
 ALIST_API_URL = os.getenv("ALIST_API_URL", "http://openlist:5244")
+PUBLIC_URL = os.getenv("PUBLIC_URL", "")  # 公网地址，如 https://openlist.example.com
 
 if not ALIST_WEBDAV_CRYPT and os.getenv("ALIST_WEBDAV"):
     ALIST_WEBDAV_CRYPT = os.getenv("ALIST_WEBDAV")
@@ -38,6 +39,7 @@ user_folder = {}         # user_id -> selected folder path (for direct mode)
 pending_files = {}       # msg_id -> file_info
 cancel_flags = {}        # task_id -> bool
 failed_files = {}        # retry_id -> {local_path, filename, file_type, type_folder, mode, user_id, ts}
+uploaded_files = {}      # share_key -> {file_path, filename, mode, ts}
 
 # AList token cache
 alist_token = None
@@ -105,6 +107,37 @@ async def alist_list_dir(path="/", page=1, per_page=100):
                 return data["data"]
             logger.error(f"AList list failed: {data}")
             return None
+
+
+async def alist_create_share(file_path):
+    """创建 AList 分享链接，返回分享 ID"""
+    token = await alist_login()
+    if not token:
+        return None, "AList 登录失败"
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"{ALIST_API_URL}/api/share/create",
+            json={"files": [file_path]},
+            headers={"Authorization": token},
+            timeout=aiohttp.ClientTimeout(total=10)
+        ) as resp:
+            data = await resp.json()
+            if data.get("code") == 200:
+                share_id = data["data"]["id"]
+                return share_id, None
+            logger.error(f"AList share failed: {data}")
+            return None, data.get("message", "未知错误")
+
+
+def get_share_url(share_id, file_path=""):
+    """构造分享链接 URL"""
+    if PUBLIC_URL:
+        base = PUBLIC_URL.rstrip('/')
+        if file_path:
+            return f"{base}/s/{share_id}/{urlquote(file_path.lstrip('/'))}"
+        return f"{base}/s/{share_id}"
+    return None
 
 
 # ============================================================
@@ -377,9 +410,22 @@ async def _background_upload(context, query, file_info, file_id, file_size, file
             elapsed = time.time() - start_time
 
             if success:
+                # 计算 AList 虚拟路径（用于分享链接）
+                if mode == "direct":
+                    alist_vpath = f"/Onedrive/telegram/{type_folder}/{filename}"
+                else:
+                    alist_vpath = f"/PrivateVideo/{type_folder}/{filename}"
+                share_key = f"share_{user_id}_{int(time.time())}"
+                uploaded_files[share_key] = {
+                    "file_path": alist_vpath,
+                    "filename": filename,
+                    "ts": time.time(),
+                }
+                keyboard = [[InlineKeyboardButton("🔗 获取下载链接", callback_data=f"share:{share_key}")]]
                 await msg.edit_text(
                     f"✅ 上传完成!\n📄 {filename}\n📏 {format_size(actual_size)}\n"
-                    f"📂 {type_folder}/\n📤 {get_mode_label(mode)}\n⏱️ {elapsed:.0f}秒"
+                    f"📂 {type_folder}/\n📤 {get_mode_label(mode)}\n⏱️ {elapsed:.0f}秒",
+                    reply_markup=InlineKeyboardMarkup(keyboard) if PUBLIC_URL else None
                 )
                 if user_autodel.get(user_id, False):
                     try:
@@ -584,6 +630,46 @@ async def callback_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.edit_text(f"❌ 重试出错: {str(e)[:200]}")
 
 
+async def callback_share(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理获取下载链接按钮"""
+    query = update.callback_query
+    if query.from_user.id != ALLOWED_USER_ID:
+        await query.answer("无权限")
+        return
+
+    share_key = query.data.replace("share:", "")
+    info = uploaded_files.pop(share_key, None)
+    if not info:
+        await query.answer("链接已过期")
+        return
+
+    await query.answer()
+    file_path = info["file_path"]
+    filename = info["filename"]
+
+    await query.edit_message_text(
+        f"🔗 正在生成下载链接...\n📄 {filename}"
+    )
+
+    share_id, err = await alist_create_share(file_path)
+    if err:
+        await query.edit_message_text(f"❌ 生成链接失败: {err}")
+        return
+
+    url = get_share_url(share_id, file_path)
+    if url:
+        await query.edit_message_text(
+            f"✅ 下载链接已生成\n📄 {filename}\n\n🔗 {url}"
+        )
+    else:
+        await query.edit_message_text(
+            f"✅ 分享已创建\n📄 {filename}\n\n"
+            f"📋 分享 ID: `{share_id}`\n"
+            f"💡 未配置 PUBLIC_URL，无法生成完整链接",
+            parse_mode="Markdown"
+        )
+
+
 async def callback_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.from_user.id != ALLOWED_USER_ID:
@@ -743,6 +829,11 @@ async def cleanup_temp_files():
     if expired:
         logger.info(f"Cleanup: removed {len(expired)} expired pending files")
 
+    # 清理过期 uploaded_files（超过 1 小时）
+    expired_shares = [k for k, v in uploaded_files.items() if now - v.get("ts", 0) > 3600]
+    for k in expired_shares:
+        uploaded_files.pop(k, None)
+
 
 # ============================================================
 #  启动
@@ -789,6 +880,7 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(callback_folder, pattern="^folder"))
     app.add_handler(CallbackQueryHandler(callback_upload, pattern="^upload_"))
     app.add_handler(CallbackQueryHandler(callback_retry, pattern="^retry:"))
+    app.add_handler(CallbackQueryHandler(callback_share, pattern="^share:"))
     app.add_handler(MessageHandler(
         filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.PHOTO,
         handle_file
