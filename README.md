@@ -18,45 +18,108 @@ A Telegram bot that automatically transfers files to cloud storage via AList/Ope
 - **自动删除 / Auto Delete** — `/autodel` 上传成功后自动删除原始消息
 - **自动清理 / Auto Cleanup** — 定时清理临时文件和过期任务
 
-## 📦 依赖 / Dependencies
-
-- [Telegram Bot API Server](https://github.com/tdlib/telegram-bot-api) — 本地部署，支持最大 2GB 文件 / Local server, supports up to 2GB files
-- [OpenList](https://github.com/OpenListTeam/OpenList) / [Alist](https://github.com/alist-org/alist) — WebDAV 网盘管理 / WebDAV cloud storage manager
-
 ## 🚀 快速开始 / Quick Start
 
-### 1. 克隆项目 / Clone
+### 1. 创建 Telegram Bot / Create Telegram Bot
+
+1. 在 Telegram 中找到 [@BotFather](https://t.me/BotFather)，发送 `/newbot`
+2. 按提示设置 bot 名称和用户名
+3. 获取 **Bot Token**（格式如 `123456:ABC-DEF...`）
+
+> Find [@BotFather](https://t.me/BotFather) on Telegram, send `/newbot`, follow the prompts, and save the **Bot Token**.
+
+### 2. 获取你的 Telegram User ID / Get Your User ID
+
+在 Telegram 中找到 [@userinfobot](https://t.me/userinfobot)，发送任意消息，它会回复你的 **User ID**。
+
+> Find [@userinfobot](https://t.me/userinfobot), send any message, and it replies with your **User ID**.
+
+### 3. 获取 Telegram API 凭据 / Get Telegram API Credentials
+
+本地 Bot API Server 需要 API ID 和 API Hash：
+
+1. 访问 [my.telegram.org](https://my.telegram.org)
+2. 用手机号登录
+3. 进入 **API development tools**
+4. 创建应用，获取 **App api_id** 和 **App api_hash**
+
+> Visit [my.telegram.org](https://my.telegram.org), log in, go to **API development tools**, create an app, and get **api_id** and **api_hash**.
+
+### 4. 准备 AList/OpenList / Set Up AList/OpenList
+
+你需要一个运行中的 AList 或 OpenList 实例，并配置好存储驱动（如 OneDrive）。
+
+You need a running AList/OpenList instance with a storage driver configured (e.g., OneDrive).
+
+- [OpenList 安装指南 / Install Guide](https://github.com/OpenListTeam/OpenList#readme)
+- [AList 安装指南 / Install Guide](https://github.com/alist-org/alist#readme)
+
+记下 AList 的以下信息：
+- API 地址（如 `http://localhost:5244`）
+- WebDAV 地址（如 `http://localhost:5244/dav/Onedrive/`）
+- 用户名和密码
+
+### 5. 克隆项目 / Clone
 
 ```bash
 git clone https://github.com/ohh561/tg-cloud-bridge.git
 cd tg-cloud-bridge
 ```
 
-### 2. 配置环境变量 / Configure
+### 6. 配置环境变量 / Configure
 
 ```bash
 cp .env.example .env
 vim .env
 ```
 
-### 3. 启动服务 / Start
+填写以下内容 / Fill in the following:
+
+```env
+# Telegram Bot
+BOT_TOKEN=123456:ABC-DEF...          # 步骤 1 获取 / From step 1
+ALLOWED_USER_ID=123456789            # 步骤 2 获取 / From step 2
+TELEGRAM_API_ID=12345                # 步骤 3 获取 / From step 3
+TELEGRAM_API_HASH=abcdef1234567890   # 步骤 3 获取 / From step 3
+
+# AList / OpenList（步骤 4 获取 / From step 4）
+ALIST_WEBDAV_CRYPT=http://openlist:5244/dav/PrivateVideo/
+ALIST_WEBDAV_DIRECT=http://openlist:5244/dav/Onedrive/
+ALIST_API_URL=http://openlist:5244
+ALIST_USER=admin
+ALIST_PASS=your_password
+
+# 可选：公网地址（用于生成下载链接）
+# Optional: public URL for share link generation
+# PUBLIC_URL=https://openlist.example.com
+```
+
+### 7. 启动服务 / Start
 
 ```bash
 docker compose up -d
 ```
 
-## ⚙️ 配置说明 / Configuration
+### 8. 验证 / Verify
 
-| 变量 / Variable | 说明 / Description | 示例 / Example |
-|------|------|------|
-| `BOT_TOKEN` | Telegram Bot Token | `123456:ABC-DEF...` |
-| `ALLOWED_USER_ID` | 允许使用的用户 ID / Allowed user ID | `123456789` |
-| `ALIST_WEBDAV_CRYPT` | 混淆模式 WebDAV 地址 / Crypt mode WebDAV URL | `http://openlist:5244/dav/PrivateVideo/` |
-| `ALIST_WEBDAV_DIRECT` | 直传模式 WebDAV 地址 / Direct mode WebDAV URL | `http://openlist:5244/dav/Onedrive/` |
-| `ALIST_API_URL` | AList API 地址 / AList API endpoint | `http://openlist:5244` |
-| `ALIST_USER` | 用户名 / Username | `admin` |
-| `ALIST_PASS` | 密码 / Password | `password` |
-| `PUBLIC_URL` | 公网地址（生成下载链接用）/ Public URL for share links | `https://openlist.example.com` |
+向你的 Bot 发送任意文件，如果弹出上传模式按钮，说明部署成功。
+
+Send any file to your bot. If upload mode buttons appear, deployment is successful.
+
+## ⚙️ 配置说明 / Configuration Reference
+
+| 变量 / Variable | 必填 / Required | 说明 / Description | 示例 / Example |
+|------|------|------|------|
+| `BOT_TOKEN` | ✅ | Telegram Bot Token | `123456:ABC-DEF...` |
+| `ALLOWED_USER_ID` | ✅ | 允许使用的用户 ID / Allowed user ID | `123456789` |
+| `TELEGRAM_API_ID` | ✅ | Telegram API ID（本地 Bot API 用） | `12345` |
+| `TELEGRAM_API_HASH` | ✅ | Telegram API Hash（本地 Bot API 用） | `abcdef1234567890` |
+| `ALIST_WEBDAV_CRYPT` | ✅ | 混淆模式 WebDAV 地址 / Crypt mode WebDAV URL | `http://openlist:5244/dav/PrivateVideo/` |
+| `ALIST_WEBDAV_DIRECT` | ✅ | 直传模式 WebDAV 地址 / Direct mode WebDAV URL | `http://openlist:5244/dav/Onedrive/` |
+| `ALIST_API_URL` | ✅ | AList API 地址 / AList API endpoint | `http://openlist:5244` |
+| `ALIST_USER` | ✅ | 用户名 / Username | `admin` |
+| `ALIST_PASS` | ✅ | 密码 / Password | `password` |
+| `PUBLIC_URL` | ❌ | 公网地址（生成下载链接用）/ Public URL for share links | `https://openlist.example.com` |
 
 > 💡 `PUBLIC_URL` 为可选配置。设置后，上传完成会显示「获取下载链接」按钮。
 >
@@ -119,6 +182,20 @@ With `PUBLIC_URL` configured, a share link button appears after upload:
 ```python
 MAX_RETRIES = 3              # 重试次数 / Retry attempts
 CONCURRENT_UPLOADS = 3       # 并发上传数 / Concurrent uploads
+```
+
+## 🏗️ 架构 / Architecture
+
+```
+User → Telegram → telegram-bot-api (local, --local mode, 2GB limit)
+                        ↓
+                  File saved to disk
+                        ↓
+                  tg-cloud-bridge reads file
+                        ↓
+                  Uploads to AList/OpenList (WebDAV)
+                        ↓
+                  Cloud Storage (OneDrive / GDrive / etc.)
 ```
 
 ## 📄 License
