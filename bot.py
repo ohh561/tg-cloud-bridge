@@ -25,7 +25,6 @@ if not ALIST_WEBDAV_CRYPT and os.getenv("ALIST_WEBDAV"):
 MAX_RETRIES = 3
 RETRY_BACKOFF = [5, 15, 30]
 CONCURRENT_UPLOADS = 3
-STREAM_CHUNK_SIZE = 4 * 1024 * 1024
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -271,59 +270,6 @@ async def callback_folder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def upload_file_async(local_path, target_url, progress_callback=None):
     """异步上传文件到 WebDAV"""
-    file_size = os.path.getsize(local_path)
-    last_update = {"time": 0, "pct": 0}
-
-    async def stream_reader():
-        loop = asyncio.get_event_loop()
-        with open(local_path, 'rb') as f:
-            while True:
-                chunk = await loop.run_in_executor(None, f.read, STREAM_CHUNK_SIZE)
-                if not chunk:
-                    break
-                if progress_callback:
-                    yield chunk
-                else:
-                    yield chunk
-
-    class ProgressStream:
-        def __init__(self, path, cb):
-            self._path = path
-            self._cb = cb
-            self._size = os.path.getsize(path)
-            self._sent = 0
-            self._loop = asyncio.get_event_loop()
-
-        def __aiter__(self):
-            return self
-
-        async def __anext__(self):
-            chunk = await asyncio.get_event_loop().run_in_executor(
-                None, self._read_chunk
-            )
-            if not chunk:
-                raise StopAsyncIteration
-            return chunk
-
-        def _read_chunk(self):
-            if not hasattr(self, '_file'):
-                self._file = open(self._path, 'rb')
-            chunk = self._file.read(STREAM_CHUNK_SIZE)
-            if chunk:
-                self._sent += len(chunk)
-                pct = int(self._sent / self._size * 100) if self._size > 0 else 0
-                now = time.time()
-                if self._cb and pct - last_update["pct"] >= 3 and now - last_update["time"] >= 3:
-                    last_update["time"] = now
-                    last_update["pct"] = pct
-                    try:
-                        self._cb(pct, self._sent, self._size)
-                    except Exception:
-                        pass
-            else:
-                self._file.close()
-            return chunk
-
     for attempt in range(MAX_RETRIES):
         try:
             async with aiohttp.ClientSession() as session:
@@ -367,8 +313,6 @@ async def _background_upload(context, query, file_info, file_id, file_size, file
 
         webdav_base = get_upload_webdav(user_id, mode)
         upload_webdav = webdav_base.rstrip('/') + f'/{type_folder}/'
-        if mode == "direct":
-            upload_webdav = webdav_base.rstrip('/') + f'/{type_folder}/'
 
         local_path = None
         try:
@@ -458,6 +402,8 @@ async def _background_upload(context, query, file_info, file_id, file_size, file
                     "mode": mode,
                     "user_id": user_id,
                     "upload_webdav": upload_webdav,
+                    "chat_id": file_info.get("chat_id"),
+                    "msg_id": file_info.get("msg_id"),
                     "ts": time.time(),
                 }
                 local_path = None  # 阻止 finally 删除文件
@@ -603,6 +549,10 @@ async def callback_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         await asyncio.sleep(3)
                         await msg.delete()
+                        orig_chat = info.get("chat_id")
+                        orig_msg_id = info.get("msg_id")
+                        if orig_chat and orig_msg_id:
+                            await context.bot.delete_message(orig_chat, orig_msg_id)
                     except Exception:
                         pass
             else:
@@ -616,6 +566,8 @@ async def callback_retry(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "mode": mode,
                     "user_id": user_id,
                     "upload_webdav": upload_webdav,
+                    "chat_id": info.get("chat_id"),
+                    "msg_id": info.get("msg_id"),
                     "ts": time.time(),
                 }
                 keyboard = [[InlineKeyboardButton("🔄 再次重试", callback_data=f"retry:{retry_id2}")]]
@@ -674,7 +626,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     current_folder = user_folder.get(update.effective_user.id, "默认")
     await update.message.reply_text(
-        "🤖 TG Super Bot v4.0\n\n"
+        "🤖 TG Super Bot v4.4\n\n"
         "发送文件即可上传到 AList\n\n"
         "命令：\n"
         "/start - 显示帮助\n"
@@ -855,5 +807,5 @@ if __name__ == '__main__':
         ])
     app.post_init = post_init
 
-    logger.info(f"🤖 Super Bot v4.0 is running... (concurrency={CONCURRENT_UPLOADS})")
+    logger.info(f"🤖 Super Bot v4.4 is running... (concurrency={CONCURRENT_UPLOADS})")
     app.run_polling()
