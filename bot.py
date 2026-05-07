@@ -317,7 +317,15 @@ async def upload_file_async(local_path, target_url, progress_callback=None):
                         if resp.status in [200, 201, 204]:
                             return True, target_url
                         body = await resp.text()
-                        return False, f"HTTP {resp.status}: {body[:100]}"
+                        error_msg = f"HTTP {resp.status}: {body[:100]}"
+                        # 423 Locked — OneDrive 文件锁，需要更长等待
+                        if resp.status == 423:
+                            wait = [30, 60, 120][attempt] if attempt < 3 else 120
+                            logger.warning(f"File locked (423), waiting {wait}s before retry...")
+                            if attempt < MAX_RETRIES - 1:
+                                await asyncio.sleep(wait)
+                                continue
+                        return False, error_msg
         except Exception as e:
             logger.error(f"Upload attempt {attempt + 1} failed: {e}")
             if attempt < MAX_RETRIES - 1:
@@ -800,7 +808,14 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 async def cleanup_temp_files():
-    """清理 telegram-bot-api 临时文件"""
+    """清理 telegram-bot-api 临时文件（跳过待重试的文件）"""
+    # 收集待重试文件的路径，避免误删
+    retry_paths = set()
+    for info in failed_files.values():
+        lp = info.get("local_path", "")
+        if lp:
+            retry_paths.add(os.path.realpath(lp))
+
     base = "/var/lib/telegram-bot-api"
     cleaned = 0
     try:
@@ -810,8 +825,11 @@ async def cleanup_temp_files():
                     continue
                 fp = os.path.join(root, f)
                 try:
+                    real_fp = os.path.realpath(fp)
+                    if real_fp in retry_paths:
+                        continue  # 跳过待重试文件
                     age_hours = (datetime.now().timestamp() - os.path.getmtime(fp)) / 3600
-                    if age_hours > 0.5:
+                    if age_hours > 1:  # 改为 1 小时，给重试更多时间
                         os.remove(fp)
                         cleaned += 1
                 except:
